@@ -5,28 +5,11 @@
         <artifactId>plugin</artifactId>
         <version>1.421</version>
     </parent>
-    <artifactId>svn-tag</artifactId>
-    <name>Jenkins Subversion Tagging Plugin</name>
-    <url>http://wiki.jenkins-ci.org/display/JENKINS/Subversion+Tagging+Plugin</url>
+    <artifactId>svn-commit</artifactId>
+    <name>Jenkins Subversion Commit Plugin</name>
+    <url>http://wiki.jenkins-ci.org/display/JENKINS/Subversion+Commit+Plugin</url>
     <packaging>hpi</packaging>
-    <version>1.17-SNAPSHOT</version>
-    <scm>
-        <connection>scm:git:git://github.com/jenkinsci/svn-tag-plugin.git</connection>
-        <developerConnection>scm:git:git@github.com:jenkinsci/svn-tag-plugin.git</developerConnection>
-        <url>http://github.com/jenkinsci/svn-tag-plugin</url>
-    </scm>
-    <developers>
-        <developer>
-            <id>k2nakamura</id>
-            <name>Kenji Nakamura</name>
-            <email>kenjin@clazzsoft.com</email>
-            <organization>DIVA</organization>
-            <roles>
-                <role>developer</role>
-            </roles>
-            <timezone>-8</timezone>
-        </developer>
-    </developers>
+    <version>1.0-SNAPSHOT</version>
     <dependencies>
         <dependency>
             <groupId>org.testng</groupId>
