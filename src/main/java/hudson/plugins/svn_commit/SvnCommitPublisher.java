@@ -53,8 +53,7 @@ public class SvnCommitPublisher extends Recorder {
                            Launcher launcher,
                            BuildListener buildListener)
             throws InterruptedException, IOException {
-        return SvnCommitPlugin.perform(abstractBuild, launcher, buildListener,
-                 this.getCommitComment());
+        return SvnCommitPlugin.perform(abstractBuild, launcher, buildListener, this.getCommitComment());
     }
 
     @Override

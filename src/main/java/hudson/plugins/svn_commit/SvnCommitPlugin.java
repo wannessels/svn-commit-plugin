@@ -3,12 +3,17 @@ package hudson.plugins.svn_commit;
 import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
 import hudson.EnvVars;
+import hudson.FilePath.FileCallable;
 import hudson.Launcher;
 import hudson.model.BuildListener;
 import hudson.model.Result;
 import hudson.model.AbstractBuild;
 import hudson.model.AbstractProject;
+import hudson.remoting.Callable;
+import hudson.remoting.VirtualChannel;
+import hudson.scm.SvnClientManager;
 import hudson.scm.SubversionSCM;
+import hudson.scm.SubversionSCM.ModuleLocation;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -18,11 +23,13 @@ import java.io.PrintStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.codehaus.groovy.control.CompilerConfiguration;
 import org.tmatesoft.svn.core.SVNCommitInfo;
 import org.tmatesoft.svn.core.SVNDepth;
+import org.tmatesoft.svn.core.SVNErrorCode;
 import org.tmatesoft.svn.core.SVNErrorMessage;
 import org.tmatesoft.svn.core.SVNException;
 import org.tmatesoft.svn.core.SVNURL;
@@ -47,11 +54,54 @@ public class SvnCommitPlugin {
      */
     private SvnCommitPlugin() {
     }
+    
+    private static class CommitTask implements FileCallable<Boolean> {
+    	
+		private static final long serialVersionUID = 1L;
+		private BuildListener buildListener;
+		private ModuleLocation moduleLocation;
+		private ISVNAuthenticationProvider authProvider;
+		private String commitMessage;
+
+		public CommitTask(AbstractProject<?, ?> rootProject, ModuleLocation moduleLocation, SubversionSCM scm, BuildListener buildListener, String commitMessage) {
+			this.moduleLocation = moduleLocation;
+			this.commitMessage = commitMessage;
+			this.authProvider = scm.createAuthenticationProvider(rootProject, moduleLocation);
+			this.buildListener = buildListener;
+		}
+
+		public Boolean invoke(File workspace, VirtualChannel channel) throws IOException, InterruptedException {
+			SvnClientManager svnClientManager = null;
+			
+			try {
+				File moduleDirectory = new File(workspace, moduleLocation.getLocalDir());
+				svnClientManager = SubversionSCM.createClientManager(authProvider);			
+				SVNCommitInfo commitInfo = svnClientManager.getCommitClient().doCommit(new File[]{moduleDirectory}, false, commitMessage, null, null, false, false,SVNDepth.INFINITY);
+			    SVNErrorMessage errorMsg = commitInfo.getErrorMessage();
+	
+	            if (null != errorMsg) {
+	                buildListener.getLogger().println(Messages.CommitFailed(errorMsg.getFullMessage()));
+	                return false;
+	            } else {
+	            	buildListener.getLogger().println(Messages.Committed(commitInfo.getNewRevision()));
+	            }
+			}catch (SVNException e) {
+				buildListener.getLogger().println(Messages.CommitFailed(e.getLocalizedMessage()));
+				return false;
+			} finally {
+				if (svnClientManager != null) {
+					svnClientManager.dispose();
+				}
+			}
+			return true;
+		}
+    	
+    }
 
     /**
      * True if the operation was successful.
      *
-     * @param abstractBuild build
+     * @param build build
      * @param launcher      launcher
      * @param buildListener build listener
      * @param commitComment    commit comment
@@ -59,23 +109,22 @@ public class SvnCommitPlugin {
      * @throws InterruptedException 
      * @throws IOException 
      */
-    @SuppressWarnings({"FeatureEnvy", "UnusedDeclaration", "TypeMayBeWeakened",
-            "LocalVariableOfConcreteClass"})
-    public static boolean perform(AbstractBuild<?,?> abstractBuild,
+    @SuppressWarnings({"FeatureEnvy", "UnusedDeclaration", "TypeMayBeWeakened", "LocalVariableOfConcreteClass"})
+    public static boolean perform(AbstractBuild<?,?> build,
                                   Launcher launcher,
                                   BuildListener buildListener,
                                   String commitComment) throws IOException, InterruptedException {
         PrintStream logger = buildListener.getLogger();
 
-        if (Result.SUCCESS!=abstractBuild.getResult()) {
+        if (Result.SUCCESS!=build.getResult()) {
             logger.println(Messages.UnsuccessfulBuild());
             return true;
         }
 
         // in the presence of Maven module build and promoted builds plugin (JENKINS-5608),
         // we rely on the root project to find the SCM configuration and revision to tag.
-        AbstractProject<?, ?> rootProject = abstractBuild.getProject().getRootProject();
-        AbstractBuild<?, ?> rootBuild = abstractBuild.getRootBuild();
+        final AbstractProject<?, ?> rootProject = build.getProject().getRootProject();
+        final AbstractBuild<?, ?> rootBuild = build.getRootBuild();
 
         if (!(rootProject.getScm() instanceof SubversionSCM)) {
             logger.println(Messages.NotSubversion(rootProject.getScm().toString()));
@@ -93,69 +142,20 @@ public class SvnCommitPlugin {
         // the build associated with the root level project.
         scm.buildEnvVars(rootBuild, envVars);
 
-        // environment variable "SVN_REVISION" doesn't contain revision number when multiple modules are
-        // specified. Instead, parse revision.txt and obtain the corresponding revision numbers.
-        Map<String, Long> revisions;
-        try {
-            revisions = parseRevisionFile(rootBuild);
-        } catch (IOException e) {
-            logger.println(Messages.FailedParsingRevisionFile(e.getLocalizedMessage()));
-            return false;
+        String evalComment = evalGroovyExpression(envVars, commitComment);
+        Boolean result = true;
+        
+        for (SubversionSCM.ModuleLocation moduleLocation : scm.getLocations(envVars, rootBuild)) {
+	        	ISVNAuthenticationProvider sap = scm.createAuthenticationProvider(rootProject, moduleLocation);
+	            if (sap == null) {
+	                logger.println(Messages.NoSVNAuthProvider());
+	                return false;
+	            }
+	        	CommitTask commitTask = new CommitTask(rootProject, moduleLocation, scm, buildListener, evalComment);
+				result &= rootBuild.getWorkspace().act(commitTask);
         }
 
-        ISVNAuthenticationProvider sap = scm.getDescriptor().createAuthenticationProvider(rootProject);
-        if (sap == null) {
-            logger.println(Messages.NoSVNAuthProvider());
-            return false;
-        }
-
-        ISVNAuthenticationManager sam = SVNWCUtil.createDefaultAuthenticationManager();
-        sam.setAuthenticationProvider(sap);
-
-        SVNCommitClient commitClient = new SVNCommitClient(sam, null);
-
-        for (SubversionSCM.ModuleLocation ml : scm.getLocations(envVars, rootBuild)) {
-			String mlUrl;
-        	URI repoURI;
-			try {
-				mlUrl = ml.getSVNURL().toString();
-				repoURI = new URI(mlUrl);
-			} catch (SVNException e) {
-        		logger.println(Messages.FailedParsingRepositoryURL(ml.remote, e.getLocalizedMessage()));
-        		return false;
-			} catch (URISyntaxException e) {
-        		logger.println(Messages.FailedParsingRepositoryURL(ml.remote, e.getLocalizedMessage()));
-        		return false;
-        	}
-            Long revision = revisions.get(mlUrl);
-            if (revision == null) {
-                // this can happen for example if the project configuration changes since this build.
-                logger.println(Messages.RevisionNotAvailable(mlUrl));
-                continue;
-            }
-
-        	logger.println(Messages.RemoteModuleLocation(mlUrl+'@'+revision));
-
-           
-            try {
-                String evalComment = evalGroovyExpression(envVars, commitComment);
-
-                SVNCommitInfo commitInfo = commitClient.doCommit(new File[]{new File(rootBuild.getWorkspace().toURI())}, false, evalComment, null, null, false, false,SVNDepth.INFINITY);
-                SVNErrorMessage errorMsg = commitInfo.getErrorMessage();
-
-                if (null != errorMsg) {
-                    logger.println(Messages.CommitFailed(errorMsg.getFullMessage()));
-                    return false;
-                } else {
-                    logger.println(Messages.Committed(commitInfo.getNewRevision()));
-                }
-            }catch (SVNException e) {
-                logger.println(Messages.CommitFailed(e.getLocalizedMessage()));
-                return false;
-            }
-        }
-
-        return true;
+        return result;
     }
 
     @SuppressWarnings({"StaticMethodOnlyUsedInOneClass", "TypeMayBeWeakened"})
@@ -183,10 +183,8 @@ public class SvnCommitPlugin {
      */
     /*package*/
     @SuppressWarnings({"NestedAssignment"})
-    static Map<String, Long> parseRevisionFile(AbstractBuild build)
-            throws IOException {
-        Map<String, Long> revisions =
-                new HashMap<String, Long>(); // module -> revision
+    static Map<String, Long> parseRevisionFile(AbstractBuild build) throws IOException {
+        Map<String, Long> revisions = new HashMap<String, Long>(); // module -> revision
         // read the revision file of the last build
         File file = SubversionSCM.getRevisionFile(build);
         if (!file.exists()) // nothing to compare against
