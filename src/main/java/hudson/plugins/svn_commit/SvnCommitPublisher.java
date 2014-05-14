@@ -49,16 +49,13 @@ public class SvnCommitPublisher extends Recorder {
     }
 
     @Override
-    public boolean perform(AbstractBuild<?, ?> abstractBuild,
-                           Launcher launcher,
-                           BuildListener buildListener)
-            throws InterruptedException, IOException {
+    public boolean perform(AbstractBuild<?, ?> abstractBuild, Launcher launcher, BuildListener buildListener) throws InterruptedException, IOException {
         return SvnCommitPlugin.perform(abstractBuild, launcher, buildListener, this.getCommitComment());
     }
 
     @Override
     public boolean needsToRunAfterFinalized() {
-        return true;
+        return false;
     }
 
     /**
@@ -72,8 +69,7 @@ public class SvnCommitPublisher extends Recorder {
     }
 
     @Extension
-    public static final class SvnCommitDescriptorImpl
-            extends BuildStepDescriptor<Publisher> {
+    public static final class SvnCommitDescriptorImpl extends BuildStepDescriptor<Publisher> {
 
 
         private String commitComment;
@@ -97,8 +93,7 @@ public class SvnCommitPublisher extends Recorder {
         }
 
         @Override
-        public boolean configure(StaplerRequest req, JSONObject formData)
-                throws FormException {
+        public boolean configure(StaplerRequest req, JSONObject formData) throws FormException {
             req.bindJSON(this, formData);
             save();
 
@@ -106,10 +101,6 @@ public class SvnCommitPublisher extends Recorder {
         }
 
     
-
-      
-
-       
         /**
          * Returns the commit comment value.
          *
@@ -139,7 +130,6 @@ public class SvnCommitPublisher extends Recorder {
 
         @Override
         public boolean isApplicable(Class<? extends AbstractProject> jobType) {
-            // need to check if this is a subversion project??
             return true;
         }
 
